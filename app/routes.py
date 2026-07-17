@@ -24,7 +24,7 @@ def add_card(card: CardItem):
     data = supabase.table("flashcards").insert({
         "term": card.term,
         "pinyin": card.pinyin,
-        "definition": card.definition
+        "definition": card.definition,
         "category": card.category
     }).execute()
     return {"message": "단어가 성공적으로 추가되었습니다!", "data": data.data}
