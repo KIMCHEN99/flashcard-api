@@ -20,7 +20,7 @@ def get_cards():
     
 @router.post("/cards")
 def add_card(card: CardItem):
-    data = supabase.table("cards").insert({
+    data = supabase.table("flashcards").insert({
         "term": card.term,
         "pinyin": card.pinyin,
         "definition": card.definition
