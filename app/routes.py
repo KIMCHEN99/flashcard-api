@@ -10,6 +10,9 @@ class CardItem(BaseModel):
     definition: str
     category: str
 
+class StudyLogItem(BaseModel):
+    log_date: str
+
 @router.get("/cards")
 def get_cards():
     # flashcards 테이블에서 데이터 가져오기
@@ -46,3 +49,20 @@ def increment_wrong_count(card_id: int):
     update_response = supabase.table("flashcards").update({"wrong_count": new_count}).eq("id", card_id).execute()
     
     return {"message": "오답 횟수가 증가되었습니다.", "new_count": new_count}
+
+@router.post("/study-logs")
+def add_study_log(log: StudyLogItem):
+    # 이미 오늘 날짜가 저장되어 있는지 확인 (중복 심기 방지)
+    existing = supabase.table("study_logs").select("*").eq("log_date", log.log_date).execute()
+    
+    if len(existing.data) == 0:
+        supabase.table("study_logs").insert({"log_date": log.log_date}).execute()
+        return {"message": "오늘의 잔디가 심어졌습니다!"}
+    
+    return {"message": "오늘은 이미 학습을 완료했습니다."}
+
+@router.get("/study-logs")
+def get_study_logs():
+    response = supabase.table("study_logs").select("log_date").execute()
+    # ["2026-07-16", "2026-07-17", ...] 형태로 날짜만 뽑아서 전달
+    return [item["log_date"] for item in response.data]
