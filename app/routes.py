@@ -8,6 +8,7 @@ class CardItem(BaseModel):
     term: str
     pinyin: str
     definition: str
+    category: str
 
 @router.get("/cards")
 def get_cards():
@@ -24,5 +25,6 @@ def add_card(card: CardItem):
         "term": card.term,
         "pinyin": card.pinyin,
         "definition": card.definition
+        "category": card.category
     }).execute()
     return {"message": "단어가 성공적으로 추가되었습니다!", "data": data.data}
