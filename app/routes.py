@@ -3,24 +3,26 @@ from pydantic import BaseModel
 from app.database import supabase
 import google.generativeai as genai
 import json
-import os  # 🌟 os 모듈 추가
+import os
+import base64
 
 router = APIRouter()
 
-# 🌟 API 키를 코드에서 지우고 환경변수에서 안전하게 불러오도록 수정
+# 환경변수에서 API 키 불러오기
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# --- 기존 Pydantic 모델 ---
+# --- Pydantic 모델 ---
 class WordItem(BaseModel):
     cn_term: str
     pinyin: str
     kr_term: str
     category_name: str
+    example_cn: str = ""  # 예문 추가
+    example_kr: str = ""  # 예문 해석 추가
 
 class StudyLogItem(BaseModel):
     log_date: str
@@ -36,16 +38,14 @@ class InteractionItem(BaseModel):
     action_type: str
     word_id: int
 
-# --- 🌟 추가된 AI용 Pydantic 모델 ---
 class AIGenerateItem(BaseModel):
     topic: str
-    category_name: str
 
 class TranslateItem(BaseModel):
-    text: str
-    mode: str # 'KR_TO_CN' (한->중) 또는 'CN_TO_KR' (중->한)
+    text: str = ""
+    image_base64: str = "" # 이미지 업로드용
 
-# JSON 파싱을 위한 헬퍼 함수
+# JSON 파싱 헬퍼 함수
 def clean_json_string(s: str) -> str:
     s = s.strip()
     if s.startswith("```json"): s = s[7:]
@@ -54,64 +54,59 @@ def clean_json_string(s: str) -> str:
     return s.strip()
 
 # --------------------------------------------------------
-# 🤖 [추가된 기능 1: AI 단어 자동 생성기]
+# 🤖 [기능 1: AI 단어+예문 미리보기 생성]
 # --------------------------------------------------------
-@router.post("/ai/generate-words")
-def generate_ai_words(item: AIGenerateItem):
+@router.post("/ai/generate-preview")
+def generate_ai_preview(item: AIGenerateItem):
     prompt = f"""
     당신은 중국어 교육 전문가입니다. '{item.topic}'와(과) 관련된 실생활/전문 중국어 단어 5개를 만들어주세요.
+    반드시 각 단어를 사용한 자연스러운 중국어 예문과 한국어 해석도 포함해야 합니다.
     반드시 아래 JSON 배열 형식으로만 대답하고 다른 말은 절대 하지 마세요.
     [
-        {{"cn_term": "단어", "pinyin": "병음", "kr_term": "한국어 뜻"}}
+        {{"cn_term": "단어", "pinyin": "병음", "kr_term": "한국어 뜻", "example_cn": "중국어 예문", "example_kr": "예문 한국어 해석"}}
     ]
     """
     try:
         response = model.generate_content(prompt)
         cleaned_json = clean_json_string(response.text)
         word_list = json.loads(cleaned_json)
-        
-        # 카테고리 확인 및 생성
-        cat_res = supabase.table("categories").select("id").eq("name", item.category_name).execute()
-        if len(cat_res.data) == 0:
-            new_cat = supabase.table("categories").insert({"name": item.category_name}).execute()
-            category_id = new_cat.data[0]["id"]
-        else:
-            category_id = cat_res.data[0]["id"]
-            
-        # 생성된 단어들을 DB에 한 번에 넣기
-        for w in word_list:
-            supabase.table("words").insert({
-                "category_id": category_id,
-                "cn_term": w["cn_term"],
-                "pinyin": w["pinyin"],
-                "kr_term": w["kr_term"]
-            }).execute()
-            
-        return {"message": f"AI가 {len(word_list)}개의 단어를 성공적으로 생성하고 추가했습니다!", "words": word_list}
+        # DB에 저장하지 않고 프론트엔드로 리스트만 바로 반환 (미리보기)
+        return word_list
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI 생성 실패: {str(e)}")
 
 # --------------------------------------------------------
-# 🤖 [추가된 기능 2: 고도화된 뉘앙스 번역기]
+# 🤖 [기능 2: 언어 자동감지 + 이미지/음성 뉘앙스 번역기]
 # --------------------------------------------------------
 @router.post("/ai/translate")
 def translate_text(item: TranslateItem):
-    direction = "한국어를 중국어로" if item.mode == "KR_TO_CN" else "중국어를 한국어로"
-    
     prompt = f"""
     당신은 한-중 커플의 소통을 돕는 통역사입니다.
-    다음 문장을 {direction} 번역해주세요: "{item.text}"
-    
+    입력된 텍스트나 이미지를 분석하여, 한국어면 중국어로, 중국어면 한국어로 자동 번역해주세요.
     기계적인 직역을 피하고, 실제 연인이나 일상생활에서 쓰는 자연스럽고 부드러운 표현으로 다듬어주세요.
+    
+    입력된 텍스트: "{item.text}"
+    
     반드시 아래 JSON 형식으로만 대답하고 다른 말은 절대 하지 마세요.
     {{
         "translated": "번역된 문장",
-        "pinyin": "병음 (한국어로 번역하는 경우 생략 가능)",
+        "pinyin": "중국어로 번역된 경우 병음 표기 (한국어로 번역된 경우 빈 문자열)",
         "nuance": "이 표현이 어떤 뉘앙스를 가지는지, 어떤 상황에서 쓰면 좋은지 한국어로 1~2줄 설명"
     }}
     """
+    
+    contents = [prompt]
+    
+    # 이미지가 함께 첨부된 경우 (Vision AI)
+    if item.image_base64:
+        try:
+            img_data = base64.b64decode(item.image_base64)
+            contents.append({"mime_type": "image/jpeg", "data": img_data})
+        except Exception:
+            pass
+
     try:
-        response = model.generate_content(prompt)
+        response = model.generate_content(contents)
         cleaned_json = clean_json_string(response.text)
         result = json.loads(cleaned_json)
         return result
@@ -120,7 +115,7 @@ def translate_text(item: TranslateItem):
 
 
 # --------------------------------------------------------
-# [기존 기능들 (유저, 단어, 잔디, 카테고리, 인터랙션)]
+# [기존 기능들: 버그 수정 및 예문 추가 반영]
 # --------------------------------------------------------
 @router.get("/users")
 def get_users():
@@ -141,15 +136,23 @@ def create_category(item: CategoryItem):
 
 @router.get("/words/{user_id}")
 def get_words(user_id: int):
-    words_res = supabase.table("words").select("id, cn_term, pinyin, kr_term, categories(name)").execute()
+    # 예문(example_cn, example_kr)도 함께 불러오도록 수정
+    words_res = supabase.table("words").select("id, cn_term, pinyin, kr_term, example_cn, example_kr, categories(name)").execute()
     stats_res = supabase.table("user_word_stats").select("word_id, wrong_count").eq("user_id", user_id).execute()
     stats_map = {s["word_id"]: s["wrong_count"] for s in stats_res.data}
+    
     result = []
     for w in words_res.data:
         cat_name = w["categories"]["name"] if w.get("categories") else "기본"
         result.append({
-            "id": w["id"], "term": w["cn_term"], "pinyin": w["pinyin"],
-            "definition": w["kr_term"], "category": cat_name, "wrong_count": stats_map.get(w["id"], 0)
+            "id": w["id"], 
+            "term": w["cn_term"], 
+            "pinyin": w["pinyin"],
+            "definition": w["kr_term"], 
+            "example_cn": w.get("example_cn", ""),
+            "example_kr": w.get("example_kr", ""),
+            "category": cat_name, 
+            "wrong_count": stats_map.get(w["id"], 0)
         })
     return result
 
@@ -160,7 +163,16 @@ def add_word(item: WordItem):
         new_cat = supabase.table("categories").insert({"name": item.category_name}).execute()
         category_id = new_cat.data[0]["id"]
     else: category_id = cat_res.data[0]["id"]
-    supabase.table("words").insert({"category_id": category_id, "cn_term": item.cn_term, "pinyin": item.pinyin, "kr_term": item.kr_term}).execute()
+    
+    # 예문 저장 추가
+    supabase.table("words").insert({
+        "category_id": category_id, 
+        "cn_term": item.cn_term, 
+        "pinyin": item.pinyin, 
+        "kr_term": item.kr_term,
+        "example_cn": item.example_cn,
+        "example_kr": item.example_kr
+    }).execute()
     return {"message": "단어가 성공적으로 추가되었습니다."}
 
 @router.put("/words/{word_id}/wrong/{user_id}")
@@ -192,7 +204,7 @@ def send_interaction(item: InteractionItem):
     supabase.table("couple_interactions").insert({
         "sender_id": item.sender_id, "receiver_id": item.receiver_id, "action_type": item.action_type, "word_id": item.word_id
     }).execute()
-    return {"message": "상대방에게 전송되었습니다!"}
+    return {"message": "전송 완료"}
 
 @router.get("/interactions/{user_id}")
 def get_interactions(user_id: int):
