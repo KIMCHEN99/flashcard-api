@@ -13,7 +13,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     
-model = genai.GenerativeModel('gemini-1.5-flash')
+# 🌟 수정됨: 1.5 모델 404 에러 방지를 위해 가장 안정적인 Pro 모델로 분리 적용
+text_model = genai.GenerativeModel('gemini-pro')
+vision_model = genai.GenerativeModel('gemini-pro-vision')
 
 # --- Pydantic 모델 ---
 class WordItem(BaseModel):
@@ -21,8 +23,8 @@ class WordItem(BaseModel):
     pinyin: str
     kr_term: str
     category_name: str
-    example_cn: str = ""  # 예문 추가
-    example_kr: str = ""  # 예문 해석 추가
+    example_cn: str = ""  
+    example_kr: str = ""  
 
 class StudyLogItem(BaseModel):
     log_date: str
@@ -43,7 +45,7 @@ class AIGenerateItem(BaseModel):
 
 class TranslateItem(BaseModel):
     text: str = ""
-    image_base64: str = "" # 이미지 업로드용
+    image_base64: str = "" 
 
 # JSON 파싱 헬퍼 함수
 def clean_json_string(s: str) -> str:
@@ -67,10 +69,10 @@ def generate_ai_preview(item: AIGenerateItem):
     ]
     """
     try:
-        response = model.generate_content(prompt)
+        # 🌟 수정됨: 텍스트 전용 안정화 모델 사용
+        response = text_model.generate_content(prompt)
         cleaned_json = clean_json_string(response.text)
         word_list = json.loads(cleaned_json)
-        # DB에 저장하지 않고 프론트엔드로 리스트만 바로 반환 (미리보기)
         return word_list
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI 생성 실패: {str(e)}")
@@ -95,18 +97,15 @@ def translate_text(item: TranslateItem):
     }}
     """
     
-    contents = [prompt]
-    
-    # 이미지가 함께 첨부된 경우 (Vision AI)
-    if item.image_base64:
-        try:
-            img_data = base64.b64decode(item.image_base64)
-            contents.append({"mime_type": "image/jpeg", "data": img_data})
-        except Exception:
-            pass
-
     try:
-        response = model.generate_content(contents)
+        # 🌟 수정됨: 이미지가 있으면 vision_model, 없으면 text_model 사용
+        if item.image_base64:
+            img_data = base64.b64decode(item.image_base64)
+            image_parts = [{"mime_type": "image/jpeg", "data": img_data}]
+            response = vision_model.generate_content([prompt, image_parts[0]])
+        else:
+            response = text_model.generate_content(prompt)
+            
         cleaned_json = clean_json_string(response.text)
         result = json.loads(cleaned_json)
         return result
@@ -136,7 +135,6 @@ def create_category(item: CategoryItem):
 
 @router.get("/words/{user_id}")
 def get_words(user_id: int):
-    # 예문(example_cn, example_kr)도 함께 불러오도록 수정
     words_res = supabase.table("words").select("id, cn_term, pinyin, kr_term, example_cn, example_kr, categories(name)").execute()
     stats_res = supabase.table("user_word_stats").select("word_id, wrong_count").eq("user_id", user_id).execute()
     stats_map = {s["word_id"]: s["wrong_count"] for s in stats_res.data}
@@ -164,7 +162,6 @@ def add_word(item: WordItem):
         category_id = new_cat.data[0]["id"]
     else: category_id = cat_res.data[0]["id"]
     
-    # 예문 저장 추가
     supabase.table("words").insert({
         "category_id": category_id, 
         "cn_term": item.cn_term, 
