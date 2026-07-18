@@ -1,68 +1,95 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from app.database import supabase
 
 router = APIRouter()
 
-class CardItem(BaseModel):
-    term: str
+# --- Pydantic 모델 정의 ---
+class WordItem(BaseModel):
+    cn_term: str
     pinyin: str
-    definition: str
-    category: str
+    kr_term: str
+    category_name: str
 
 class StudyLogItem(BaseModel):
     log_date: str
 
-@router.get("/cards")
-def get_cards():
-    # flashcards 테이블에서 데이터 가져오기
-    try:
-        response = supabase.table("flashcards").select("*").execute()
-        return response.data
-    except Exception as e:
-        return {"error": str(e)}
+# 1. 프로필 목록 불러오기
+@router.get("/users")
+def get_users():
+    res = supabase.table("profiles").select("*").execute()
+    return res.data
+
+# 2. 특정 사용자의 단어 및 오답 횟수 불러오기 (양방향 지원 대비)
+@router.get("/words/{user_id}")
+def get_words(user_id: int):
+    # 단어와 카테고리 정보 가져오기
+    words_res = supabase.table("words").select("id, cn_term, pinyin, kr_term, categories(name)").execute()
+    # 해당 사용자의 오답 기록만 가져오기
+    stats_res = supabase.table("user_word_stats").select("word_id, wrong_count").eq("user_id", user_id).execute()
     
-@router.post("/cards")
-def add_card(card: CardItem):
-    data = supabase.table("flashcards").insert({
-        "term": card.term,
-        "pinyin": card.pinyin,
-        "definition": card.definition,
-        "category": card.category
+    # 파이썬 딕셔너리로 오답 횟수 매핑
+    stats_map = {s["word_id"]: s["wrong_count"] for s in stats_res.data}
+    
+    result = []
+    for w in words_res.data:
+        cat_name = w["categories"]["name"] if w.get("categories") else "기본"
+        result.append({
+            "id": w["id"],
+            "term": w["cn_term"],
+            "pinyin": w["pinyin"],
+            "definition": w["kr_term"],
+            "category": cat_name,
+            "wrong_count": stats_map.get(w["id"], 0)
+        })
+    return result
+
+# 3. 새 단어 추가 (카테고리 자동 감지 및 생성)
+@router.post("/words")
+def add_word(item: WordItem):
+    # 카테고리가 있는지 확인하고, 없으면 새로 생성
+    cat_res = supabase.table("categories").select("id").eq("name", item.category_name).execute()
+    if len(cat_res.data) == 0:
+        new_cat = supabase.table("categories").insert({"name": item.category_name}).execute()
+        category_id = new_cat.data[0]["id"]
+    else:
+        category_id = cat_res.data[0]["id"]
+
+    # 단어 추가
+    supabase.table("words").insert({
+        "category_id": category_id,
+        "cn_term": item.cn_term,
+        "pinyin": item.pinyin,
+        "kr_term": item.kr_term
     }).execute()
-    return {"message": "단어가 성공적으로 추가되었습니다!", "data": data.data}
+    return {"message": "단어가 성공적으로 추가되었습니다."}
 
-@router.put("/cards/{card_id}/wrong")
-def increment_wrong_count(card_id: int):
-    # 1. 먼저 현재 단어의 데이터를 가져와 wrong_count 값을 확인합니다.
-    response = supabase.table("flashcards").select("wrong_count").eq("id", card_id).execute()
-    
-    if len(response.data) == 0:
-        return {"error": "단어를 찾을 수 없습니다."}
-        
-    current_count = response.data[0].get("wrong_count", 0)
-    
-    # 2. 오답 횟수를 1 증가시킵니다.
-    new_count = current_count + 1
-    
-    # 3. 데이터베이스를 업데이트합니다.
-    update_response = supabase.table("flashcards").update({"wrong_count": new_count}).eq("id", card_id).execute()
-    
-    return {"message": "오답 횟수가 증가되었습니다.", "new_count": new_count}
-
-@router.post("/study-logs")
-def add_study_log(log: StudyLogItem):
-    # 이미 오늘 날짜가 저장되어 있는지 확인 (중복 심기 방지)
-    existing = supabase.table("study_logs").select("*").eq("log_date", log.log_date).execute()
+# 4. 특정 사용자의 오답 횟수 증가
+@router.put("/words/{word_id}/wrong/{user_id}")
+def increment_wrong_count(word_id: int, user_id: int):
+    existing = supabase.table("user_word_stats").select("*").eq("user_id", user_id).eq("word_id", word_id).execute()
     
     if len(existing.data) == 0:
-        supabase.table("study_logs").insert({"log_date": log.log_date}).execute()
+        supabase.table("user_word_stats").insert({"user_id": user_id, "word_id": word_id, "wrong_count": 1}).execute()
+    else:
+        current_count = existing.data[0]["wrong_count"]
+        supabase.table("user_word_stats").update({"wrong_count": current_count + 1}).eq("user_id", user_id).eq("word_id", word_id).execute()
+        
+    return {"message": "오답이 기록되었습니다."}
+
+# 5. 특정 사용자의 잔디 심기
+@router.post("/study-logs/{user_id}")
+def add_study_log(user_id: int, log: StudyLogItem):
+    existing = supabase.table("study_logs").select("*").eq("user_id", user_id).eq("log_date", log.log_date).execute()
+    
+    if len(existing.data) == 0:
+        supabase.table("study_logs").insert({"user_id": user_id, "log_date": log.log_date}).execute()
         return {"message": "오늘의 잔디가 심어졌습니다!"}
     
     return {"message": "오늘은 이미 학습을 완료했습니다."}
 
-@router.get("/study-logs")
-def get_study_logs():
-    response = supabase.table("study_logs").select("log_date").execute()
-    # ["2026-07-16", "2026-07-17", ...] 형태로 날짜만 뽑아서 전달
+# 6. 특정 사용자의 잔디 기록 불러오기
+@router.get("/study-logs/{user_id}")
+def get_study_logs(user_id: int):
+    response = supabase.table("study_logs").select("log_date").eq("user_id", user_id).execute()
     return [item["log_date"] for item in response.data]
