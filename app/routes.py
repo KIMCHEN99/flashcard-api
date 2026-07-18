@@ -13,9 +13,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     
-# 🌟 수정됨: 1.5 모델 404 에러 방지를 위해 가장 안정적인 Pro 모델로 분리 적용
-text_model = genai.GenerativeModel('gemini-pro')
-vision_model = genai.GenerativeModel('gemini-pro-vision')
+# 🌟 핵심 수정: 404 에러를 뿜는 폐기된 모델 대신, 최신 통합 모델인 gemini-2.5-flash 적용
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 # --- Pydantic 모델 ---
 class WordItem(BaseModel):
@@ -69,8 +68,7 @@ def generate_ai_preview(item: AIGenerateItem):
     ]
     """
     try:
-        # 🌟 수정됨: 텍스트 전용 안정화 모델 사용
-        response = text_model.generate_content(prompt)
+        response = model.generate_content(prompt)
         cleaned_json = clean_json_string(response.text)
         word_list = json.loads(cleaned_json)
         return word_list
@@ -98,13 +96,13 @@ def translate_text(item: TranslateItem):
     """
     
     try:
-        # 🌟 수정됨: 이미지가 있으면 vision_model, 없으면 text_model 사용
+        # 이미지가 첨부된 경우와 텍스트만 있는 경우 모두 단일 모델로 처리
         if item.image_base64:
             img_data = base64.b64decode(item.image_base64)
             image_parts = [{"mime_type": "image/jpeg", "data": img_data}]
-            response = vision_model.generate_content([prompt, image_parts[0]])
+            response = model.generate_content([prompt, image_parts[0]])
         else:
-            response = text_model.generate_content(prompt)
+            response = model.generate_content(prompt)
             
         cleaned_json = clean_json_string(response.text)
         result = json.loads(cleaned_json)
