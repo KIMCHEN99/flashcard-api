@@ -14,7 +14,7 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     
 # 🌟 핵심 수정: 404 에러를 뿜는 폐기된 모델 대신, 최신 통합 모델인 gemini-2.5-flash 적용
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-3.5-flash')
 
 # --- Pydantic 모델 ---
 class WordItem(BaseModel):
