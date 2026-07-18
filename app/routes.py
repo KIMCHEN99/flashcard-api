@@ -115,3 +115,54 @@ def add_study_log(user_id: int, log: StudyLogItem):
 def get_study_logs(user_id: int):
     response = supabase.table("study_logs").select("log_date").eq("user_id", user_id).execute()
     return [item["log_date"] for item in response.data]
+
+# --- 추가할 Pydantic 모델 (파일 상단 class들 모여있는 곳에 추가하거나 여기에 두셔도 됩니다) ---
+class InteractionItem(BaseModel):
+    sender_id: int
+    receiver_id: int
+    action_type: str
+    word_id: int
+
+# --------------------------------------------------------
+# 🌟 [커플 인터랙션 및 잔디밭 업데이트 추가 API] 🌟
+# --------------------------------------------------------
+
+# 9. 커플 전체 잔디 기록 불러오기 (하트 잔디용)
+@router.get("/study-logs/couple/all")
+def get_couple_study_logs():
+    res = supabase.table("study_logs").select("user_id, log_date").execute()
+    
+    # 두 사람의 기록을 각각 리스트로 묶어서 반환
+    logs = {"1": [], "2": []}
+    for item in res.data:
+        uid = str(item["user_id"])
+        if uid in logs:
+            logs[uid].append(item["log_date"])
+    return logs
+
+# 10. 미션 단어 또는 콕 찌르기 보내기
+@router.post("/interactions")
+def send_interaction(item: InteractionItem):
+    supabase.table("couple_interactions").insert({
+        "sender_id": item.sender_id,
+        "receiver_id": item.receiver_id,
+        "action_type": item.action_type,
+        "word_id": item.word_id
+    }).execute()
+    return {"message": "상대방에게 전송되었습니다!"}
+
+# 11. 내게 온 새로운(안 읽은) 미션/찌르기 확인하기
+@router.get("/interactions/{user_id}")
+def get_interactions(user_id: int):
+    # 나에게 온 메시지 중 아직 안 읽은(is_read=False) 것과 해당 단어 정보를 조인해서 가져옴
+    res = supabase.table("couple_interactions").select(
+        "id, sender_id, action_type, is_read, words(id, cn_term, pinyin, kr_term, categories(name))"
+    ).eq("receiver_id", user_id).eq("is_read", False).execute()
+    
+    return res.data
+
+# 12. 미션/찌르기 읽음(확인) 처리
+@router.put("/interactions/{interaction_id}/read")
+def mark_interaction_read(interaction_id: int):
+    supabase.table("couple_interactions").update({"is_read": True}).eq("id", interaction_id).execute()
+    return {"message": "읽음 처리 완료"}
