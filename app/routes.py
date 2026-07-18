@@ -13,7 +13,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     
-# 🌟 핵심 수정: 404 에러를 뿜는 폐기된 모델 대신, 최신 통합 모델인 gemini-2.5-flash 적용
+# 최신 모델 적용
 model = genai.GenerativeModel('gemini-3.5-flash')
 
 # --- Pydantic 모델 ---
@@ -46,7 +46,6 @@ class TranslateItem(BaseModel):
     text: str = ""
     image_base64: str = "" 
 
-# JSON 파싱 헬퍼 함수
 def clean_json_string(s: str) -> str:
     s = s.strip()
     if s.startswith("```json"): s = s[7:]
@@ -54,9 +53,7 @@ def clean_json_string(s: str) -> str:
     if s.endswith("```"): s = s[:-3]
     return s.strip()
 
-# --------------------------------------------------------
-# 🤖 [기능 1: AI 단어+예문 미리보기 생성]
-# --------------------------------------------------------
+# --- AI 기능 ---
 @router.post("/ai/generate-preview")
 def generate_ai_preview(item: AIGenerateItem):
     prompt = f"""
@@ -75,9 +72,6 @@ def generate_ai_preview(item: AIGenerateItem):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI 생성 실패: {str(e)}")
 
-# --------------------------------------------------------
-# 🤖 [기능 2: 언어 자동감지 + 이미지/음성 뉘앙스 번역기]
-# --------------------------------------------------------
 @router.post("/ai/translate")
 def translate_text(item: TranslateItem):
     prompt = f"""
@@ -94,9 +88,7 @@ def translate_text(item: TranslateItem):
         "nuance": "이 표현이 어떤 뉘앙스를 가지는지, 어떤 상황에서 쓰면 좋은지 한국어로 1~2줄 설명"
     }}
     """
-    
     try:
-        # 이미지가 첨부된 경우와 텍스트만 있는 경우 모두 단일 모델로 처리
         if item.image_base64:
             img_data = base64.b64decode(item.image_base64)
             image_parts = [{"mime_type": "image/jpeg", "data": img_data}]
@@ -110,10 +102,7 @@ def translate_text(item: TranslateItem):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"번역 실패: {str(e)}")
 
-
-# --------------------------------------------------------
-# [기존 기능들: 버그 수정 및 예문 추가 반영]
-# --------------------------------------------------------
+# --- 기존 데이터 조회 및 추가 기능 ---
 @router.get("/users")
 def get_users():
     res = supabase.table("profiles").select("*").execute()
@@ -169,6 +158,32 @@ def add_word(item: WordItem):
         "example_kr": item.example_kr
     }).execute()
     return {"message": "단어가 성공적으로 추가되었습니다."}
+
+# 🌟 [신규] 카테고리 삭제 기능 (연결된 단어도 모두 삭제)
+@router.delete("/categories/{category_id}")
+def delete_category(category_id: int):
+    try:
+        words = supabase.table("words").select("id").eq("category_id", category_id).execute().data
+        word_ids = [w["id"] for w in words]
+        if word_ids:
+            supabase.table("user_word_stats").delete().in_("word_id", word_ids).execute()
+            supabase.table("couple_interactions").delete().in_("word_id", word_ids).execute()
+            supabase.table("words").delete().eq("category_id", category_id).execute()
+        supabase.table("categories").delete().eq("id", category_id).execute()
+        return {"message": "카테고리가 삭제되었습니다."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 🌟 [신규] 개별 단어 삭제 기능
+@router.delete("/words/{word_id}")
+def delete_word(word_id: int):
+    try:
+        supabase.table("user_word_stats").delete().eq("word_id", word_id).execute()
+        supabase.table("couple_interactions").delete().eq("word_id", word_id).execute()
+        supabase.table("words").delete().eq("id", word_id).execute()
+        return {"message": "단어가 삭제되었습니다."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.put("/words/{word_id}/wrong/{user_id}")
 def increment_wrong_count(word_id: int, user_id: int):
